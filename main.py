@@ -16,7 +16,6 @@ def clamp(x) -> float:
 if __name__ == "__main__":
     src = 'src/'
     dst = 'dst/'
-    visible = True
 
     # Determines how many triangles are in the distortion mesh
     # A resolution of 100 means there's 100 triangles horizontally and 100 vertically
@@ -42,11 +41,10 @@ if __name__ == "__main__":
         GLFW.GLFW_OPENGL_FORWARD_COMPAT, 
         GLFW.GLFW_TRUE
     )
-    if not visible:
-        glfw.window_hint(
+    glfw.window_hint(
         GLFW.GLFW_VISIBLE, 
         GLFW.GLFW_FALSE
-        )
+    )
     window = glfw.create_window(1000, 1000, "Window", None, None)
     glfw.make_context_current(window)
     
@@ -136,13 +134,21 @@ if __name__ == "__main__":
     glEnableVertexAttribArray(1)
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(8))
     
-        # Creates a texture object
+        # Creates a texture object for dst render
     texture = glGenTextures(1)
     glBindTexture(GL_TEXTURE_2D, texture)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+
+        # Creates a frame buffer object. This is necessary to explicitly set pixel ownership when writing large number of pixels to an image.
+    drb = glGenRenderbuffers(1)
+    glBindRenderbuffer(GL_RENDERBUFFER, drb)
+    fbo = glGenFramebuffers(1)
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, drb)
 
     # Main loop
     vertex_coordinates = list(zip(vertices[::4], vertices[1::4]))
@@ -154,19 +160,11 @@ if __name__ == "__main__":
         image = cv2.flip(image, 0)
         width = len(image[0])
         height = len(image)
-        
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1 if image.itemsize & 3 else 4)
-        glTexImage2D(
-            GL_TEXTURE_2D, 
-            0, 
-            GL_RGB, 
-            width, height,
-            0,
-            GL_BGR, 
-            GL_UNSIGNED_BYTE, 
-            image)
-        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_BGR, GL_UNSIGNED_BYTE, image)
+
         # Updates the rendering size
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height)
         glfw.set_window_size(window, width, height)
         glViewport(0, 0, width, height)
 
@@ -179,24 +177,24 @@ if __name__ == "__main__":
             vertices[3::4] = [math.ceil(y%1) * noise_sample_y([x, y]) for x, y in vertex_coordinates]
             glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_DYNAMIC_DRAW)
             
+            # Renders image off-screen
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
             glBindVertexArray(vao)
             glDrawElements(GL_TRIANGLES, len(indices), GL_UNSIGNED_INT, None)
         
             # Saves image
             output = np.zeros((height, width, 3), np.uint8)
+            glReadBuffer(GL_COLOR_ATTACHMENT0)
             glReadPixels(0, 0, width, height, GL_BGR, GL_UNSIGNED_BYTE, output)
             output = cv2.flip(output, 0)
             path_extension = path.split('.')
             cv2.imwrite(f'{dst}{path_extension[0]}_{version}.{path_extension[1]}', output)
-
-            # Displays image to window
-            if visible:
-                glfw.swap_buffers(window)
     print(time.time() - start_time)
 
     # Clean-up
     glDeleteVertexArrays(1, [vao])
     glDeleteBuffers(2, [vbo, ebo])
+    glDeleteFramebuffers(1, [fbo])
     glDeleteTextures(1, [texture])
     glDeleteShader(vertex_shader)
     glDeleteShader(fragment_shader)
